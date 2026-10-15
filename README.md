@@ -1,5 +1,6 @@
 # AgentToMotorcycleERP — 摩托车零部件采购 ERP 与 AI 采购智能体
 
+![alt text](展示图.jpeg)
 本仓库是一个**「传统 ERP 后端 + AI 采购智能体」**的完整示例工程：用 Spring Boot 实现摩托车零部件采购的业务系统（供应商 / 零部件 / 采购订单 / 库存 / 客户 / 物流 / 统计），再在其之上叠加一个基于 DeepAgents + LangGraph 的 AI 采购助手，让用户用自然语言完成比价分析、行情调研、订单创建与修改。
 
 ```
