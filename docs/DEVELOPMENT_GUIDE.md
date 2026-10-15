@@ -288,7 +288,7 @@ curl.exe "http://localhost:8080/api/inventory/warning"
 | 3 | 订单更新是"物理删除 + 重新插入" | `PurchaseOrderServiceImpl.updateById` | 未提交字段被清空；`createTime` 被刷新；主键被 `AUTO_INCREMENT` 重新分配；`deleted` 被强制重置为 0（**软删除的订单会被一次更新"复活"**） | 改为真正的 UPDATE；至少在调用侧固化"读-合并-写"约定 |
 | 4 | 订单明细用**请求里的旧 id** 回插 | `PurchaseOrderServiceImpl.updateById` 第 6 步 | 订单行已拿到新 id，明细仍指向旧 id → 若 MySQL 未复用该 id，明细挂到错误的订单上 | 明细回插时改用 `order.getId()` |
 | 5 | 未注册分页插件 | `application.yml` 的 `exclude` + `MyBatisPlusConfig` 手写 `MybatisSqlSessionFactoryBean` | **`MybatisPlusInterceptor` / `PaginationInnerInterceptor` 不存在**，6 个 `/page` 端点很可能返回全部匹配行而忽略 `size`（`PageResult.current`/`size` 仍回显请求值） | 补 `MybatisPlusInterceptor` Bean，或去掉 `exclude` 让自动配置生效；**集成前先实测确认** |
-| 6 | `recreate-tables` 配置项无效 | `DatabaseInitializer` 未注入该属性 | README 承诺的"重新初始化"做不到；唯一触发重建的方式是清空 `user` 表 | 要么实现，要么从文档与配置中移除 |
+| 6 | `recreate-tables` 配置项无效 | `DatabaseInitializer` 未注入该属性 | 该键写进了 `application.yml` 却从未被读取，"设置后重新初始化"做不到；唯一触发重建的方式是清空 `user` 表 | 要么实现，要么从配置中移除 |
 | 7 | 无认证/授权 | 全部控制器 | 任何匿名请求可创建订单、改库存、改信用评级 | 加 Spring Security + JWT；至少在网关层限制 |
 | 8 | 数据源口令明文提交 | `application.yml`（且 `.gitignore` 虽忽略该文件却已被提交，`target/classes/` 与打包 jar 中也有副本） | 凭据泄漏风险 | 改环境变量 / 密钥管理服务，并轮换该口令 |
 | 9 | 订单状态无任何校验 | `PurchaseOrderServiceImpl.updateOrderStatus` | 任意整数可写入，可从"已入库"倒回"待审核"，且不触发任何库存动作 | 加状态机校验 |
@@ -303,13 +303,13 @@ curl.exe "http://localhost:8080/api/inventory/warning"
 | # | 问题 | 位置 | 说明 |
 |---|------|------|------|
 | 15 | `mcp_tools_bean.py` 重复两份 | `src/agent/` 与 `src/mcp_server/` | 已确认两文件 **MD5 完全相同**（`57103832A31C25A8973F7EE920E533CC`）；改一处必须改另一处，或删掉一份 |
-| 16 | 建表逻辑有两份且差异大 | `DatabaseInitializer.createTables()` vs `docs/database_schema.sql` | 应用建的库**没有外键、没有 `uk_order_part`、没有视图、只有 8 个索引**；详见 [DATABASE.md](DATABASE.md) §1.6 |
+| 16 | 建表逻辑有两份且差异大 | `DatabaseInitializer.createTables()` vs `docs/database_schema.sql` | 应用建的库**没有外键、没有 `uk_order_part`、没有视图、只有 11 个二级索引/唯一键**；详见 [DATABASE.md](DATABASE.md) §1.6 |
 | 17 | `database_schema.sql` 的索引块在 MySQL 8 上语法错误 | `docs/database_schema.sql` 末尾 | `CREATE INDEX IF NOT EXISTS` 是 MariaDB 扩展；该块整体报错 |
 | 18 | 先跑 SQL 会让种子数据完全跳过 | `database_schema.sql` 的 4 条 `INSERT INTO user` + `insertSampleData()` 的 `COUNT(*) FROM user` 短路 | 得到"空表 + 4 用户"的库 |
 | 19 | 5 个枚举类从未被使用 | `common/enums/` 的 `OrderStatusEnum`、`PartCategoryEnum`、`CustomerTypeEnum`、`SupplierStatusEnum`、`UserRoleEnum` | 状态/分类/角色在业务代码里全是裸 `Integer`/`String` 字面量；`isValid()` 从未被调用 |
 | 20 | `UserService` / `UserMapper` 是死代码 | `service/`、`mapper/`、`entity/User.java` | 无 `UserController`，从未被注入——用户管理无法通过 HTTP 访问 |
 | 21 | `BusinessException` 从未被抛出 | `common/exception/` | `handleBusinessException` 是死代码；失败一律靠 `boolean` 返回值 |
-| 22 | 6 个 `ResultCode` 永不可达 | `ResultCode` 的 401/403/404/600/604/605 | 文档中提及 604/605 会误导调用方 |
+| 22 | 6 个 `ResultCode` 永不可达 | `ResultCode` 的 401/403/404/600/604/605 | 代码里没有任何路径会产生它们（`BusinessException` 从未实例化、`Result.unauthorized/forbidden/notFound` 无调用方、状态更新无校验）；调用方不应针对这些码写分支 |
 | 23 | `mybatis-plus.*` YAML 全部不生效 | `application.yml` | 自动配置被排除，手写工厂不读这些属性；日志里的 SQL 来自 `com.motorparts: debug` 而非 `log-impl: StdOutImpl` |
 | 24 | 大量惰性配置块 | `application.yml` | `motorparts.upload.*`、`motorparts.system.*`、`spring.jpa.*`、`spring.messages.basename: i18n/messages`（`i18n/` 目录不存在）均无人读取 |
 | 25 | `DdlApplicationRunnerConfig` 是空实现 | `config/` | 仅用于规避启动期 bean 查找错误，注释自陈 |
@@ -319,18 +319,18 @@ curl.exe "http://localhost:8080/api/inventory/warning"
 | 29 | `PageResult.records` 可能少于 `size` 而 `total` 不变 | `InventoryServiceImpl.pageInventoriesWithPart` | `partName` 在分页后于 Java 侧过滤 |
 | 30 | `Collectors.toMap` 无 merge 函数 | `searchOrderDetails`、`getWarningListWithPart` | 若唯一约束缺失（应用建表时确实缺 `uk_order_part`）遇重复键会抛 `IllegalStateException` |
 | 31 | 零测试 | `src/test/java` 不存在（`spring-boot-starter-test` 已声明） | 无回归保护 |
-| 32 | 三套订单编号规则并存 | `DatabaseInitializer`（`PO{年}{6位}`）、`SparkPlugDataInitializer`（`PO{年}{月}{4位}-{毫秒}`）、MCP 工具（`PO{年月日}{3位}`）、README（`PO202605060001`） | 无统一生成器；`createOrder` 要求调用方自带编号 |
+| 32 | 多套订单编号规则并存 | `DatabaseInitializer`（`PO{年}{6位}`）、`SparkPlugDataInitializer`（`PO{年}{月}{4位}-{毫秒}`）、MCP 工具（`PO{年月日}{3位}`）、文档示例（`PO202605060001`） | 无统一生成器；`createOrder` 要求调用方自带编号 |
 | 33 | `test_mcp.py` 已过时 | `src/test/` | 调用的 `order_update` 参数结构（`update_data` 包裹）与当前扁平参数实现不符，直接跑会失败 |
 | 34 | `SKILL.md` 与实现参数名不符 | `skills/main/skill-management/SKILL.md` | 文档写 `assign_skill(skill_name, subagent_name)`，实现是 `agent_name` |
-| 35 | `ERP_OPENCLAW/README.md`、`pyproject.toml` 仍是 LangGraph 模板 | 项目根 | 文档与依赖声明都不反映实际实现；`pip install -e .` 装不出可用环境 |
+| 35 | `ERP_OPENCLAW/pyproject.toml` 仍是 LangGraph 模板 | 项目根 | 依赖声明与实际实现不符（真实依赖见 `requirements.txt`），`pip install -e .` 装不出可用环境；其 `readme = "README.md"` 指向的文件在该目录下并不存在 |
 | 36 | 大量控制台 `print` 而非 `logging` | `agent_loader.py`、`mcp_client.py`、`sandbox_setup.py`、`chat.py` | 生产环境无法按级别过滤或输出到文件；`main_agent.py` 只在 `APP_ENV=production` 时写文件 |
 | 37 | 调试日志无限增长 | `chat.py` 写 `%TEMP%/deepagent_debug/` | 无清理机制 |
 | 38 | MCP 工具子串匹配可能过度匹配 | `subagents/loader.py` | `part_` 会命中 `part_by_supplier`；未匹配只告警 |
 | 39 | 状态码 `1..5` 硬编码在三处 | `OrderStatusEnum`、`order_tools.py` docstring、`procurement_order.yaml` | 改枚举需同步三处 |
 | 40 | `GET /statistics/monthly-trend` 参数名不统一 | `StatisticsController` | 用 `startDateParam`/`endDateParam`，与其他端点的 `startDate`/`endDate` 不一致 |
 | 41 | `GET /api/history/{thread_id}` 的 PATCH 是占位实现 | `history.py` | 返回"标题更新功能待实现" |
-| 42 | `orderTime` 输出格式与文档不符 | `CustomLocalDateTimeSerializer` + `@JsonSerialize` 覆盖 `@JsonFormat` | 既有 `API_DOCUMENTATION.md` 的示例时间格式是错的；详见 [API_REFERENCE.md](API_REFERENCE.md) §1.4 |
-| 43 | `totalAmount` 被截断为整数元 | `getOrderStatistics` 的 `BigDecimal.longValue()` | 既有文档还声称单位是"分"，双重错误 |
+| 42 | `LocalDateTime` 的输出格式**因类而异** | `CustomLocalDateTimeSerializer`（实体）与 DTO 上的 `@JsonFormat`/Jackson 默认 ISO | 同一个响应里可能同时出现 `yyyy-MM-dd HH:mm:ss`、`2026-05-23T14:30:00.000`、`2026-05-23T14:30:00` 三种写法；详见 [API_REFERENCE.md](API_REFERENCE.md) §1.4 |
+| 43 | `totalAmount` 在不同接口里语义不一致 | `getOrderStatistics` 的 `BigDecimal.longValue()` 与 `/statistics/monthly-trend` | 前者截断为整数元（Long），后者保留小数的元（BigDecimal）——同名不同型，容易误用 |
 | 44 | 库存统计存在 NPE 风险 | `StatisticsController.getInventoryStatistics`、`InventoryController.checkInventory` | `Integer` 开箱无 null 检查，而 `safety_stock` 可空 |
 
 ### 7.3 前端侧

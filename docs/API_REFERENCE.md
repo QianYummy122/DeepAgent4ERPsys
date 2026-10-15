@@ -6,7 +6,7 @@
 2. **AI 助手后端 API**（FastAPI，`http://localhost:8090`）— 对话流、中断恢复、会话历史
 3. **MCP 工具**（FastMCP，`http://127.0.0.1:8000/mcp`）— 8 个 ERP 工具 + 远程可视化工具
 
-> 逐端点的完整请求/响应示例（含全部字段与错误分支）见既有的 [API_DOCUMENTATION.md](../MotorcyclePartsProcurementSystem/docs/API_DOCUMENTATION.md)（63 KB）。本文提供**速查表**、**契约要点**，以及既有文档未覆盖的 **MCP 与 SSE 协议**，并对既有文档中若干与代码不符之处做了更正（见 §1.4、§1.7、§5.3）。
+> 逐端点的完整请求/响应示例（含全部字段与错误分支）见 [API_DOCUMENTATION.md](../MotorcyclePartsProcurementSystem/docs/API_DOCUMENTATION.md)（已按代码核实）。本文提供**速查表**、**契约要点**，以及该文档未覆盖的 **MCP 与 SSE 协议**；两处对同一行为的描述已经对齐。
 
 ---
 
@@ -82,14 +82,18 @@
 
 ### 1.4 时间与日期格式
 
-> **重要更正**：既有的 `API_DOCUMENTATION.md` 示例把 `createTime` 写成 `"2026-05-06T10:00:00.000"`（ISO 带毫秒）。**实际不是这个格式。** `BaseEntity` 上的 `@JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss.SSS")` 会被 `@JsonSerialize(using = CustomLocalDateTimeSerializer.class)` 覆盖，而该序列化器硬编码输出 `yyyy-MM-dd HH:mm:ss`（空格分隔、**无毫秒**）。以下表格描述的是实际行为。
+> **同一个响应里可能同时出现多种时间写法**，取决于字段所在的类：实体字段由 `CustomLocalDateTimeSerializer` 输出空格格式（`BaseEntity` 上的 `@JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss.SSS")` 被 `@JsonSerialize` 覆盖），而 DTO 字段走各自注解或 Jackson 默认 ISO。以下表格描述实际行为（已用 Jackson 2.15 实测）。
 
 **输出格式（服务端 → 客户端）**
 
 | 字段 | 格式 | 示例 |
 |------|------|------|
-| 所有 `LocalDateTime` 实体字段（`createTime`、`updateTime`、`orderTime`、`lastInboundTime`、`shipTime` 等） | `yyyy-MM-dd HH:mm:ss` | `2026-05-23 14:30:00` |
+| 实体 `LocalDateTime` 字段（`createTime`、`updateTime`、`orderTime`、`lastInboundTime`、`shipTime`、`registeredTime` 等） | `yyyy-MM-dd HH:mm:ss` | `2026-05-23 14:30:00` |
+| `InventoryWithPart.createTime`/`updateTime`（含其 `partDetail`） | `yyyy-MM-dd'T'HH:mm:ss.SSS`（ISO，带毫秒） | `2026-05-23T14:30:00.000` |
+| `PartWithSupplier`、`OrderDetailWithPartAndSupplier` 的 `createTime`/`updateTime`（无注解） | Jackson 默认 ISO，无毫秒 | `2026-05-23T14:30:00` |
 | `LocalDate` 字段（`expectedDeliveryDate`、`actualDeliveryDate`） | `yyyy-MM-dd` | `2026-06-15` |
+
+> 注意 `spring.jackson.date-format` **不影响** `LocalDateTime`（只作用于 `java.util.Date`），配置里写了 `yyyy-MM-dd HH:mm:ss` 也不会让 DTO 字段变成空格格式。
 
 **输入格式（客户端 → 服务端）**
 
@@ -318,7 +322,7 @@ baseMapper.insert(order);                            // 重新 INSERT
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/swagger-ui/index.html` | Swagger UI（springdoc 2.0.2 路径；旧文档写的 `/swagger-ui.html` 已不适用） |
+| GET | `/swagger-ui/index.html` | Swagger UI（springdoc 2.0.2 的路径；`/swagger-ui.html` 是 1.x 写法） |
 | GET | `/v3/api-docs` | OpenAPI 3 JSON |
 
 Swagger 元信息：标题「摩托车零部件采购管理系统 API」，版本 `1.0.0`。

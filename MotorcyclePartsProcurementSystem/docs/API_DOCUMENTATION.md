@@ -4,11 +4,14 @@
 
 | 项目 | 说明 |
 |------|------|
-| **API文档地址** | http://localhost:8080/swagger-ui.html |
+| **API文档地址** | http://localhost:8080/swagger-ui/index.html （springdoc-openapi 2.0.2；旧的 `/swagger-ui.html` 已不适用） |
+| **OpenAPI JSON** | http://localhost:8080/v3/api-docs |
 | **基础路径** | http://localhost:8080/api |
 | **响应格式** | JSON |
-| **认证方式** | 当前系统未配置认证，所有接口可直接访问 |
+| **认证方式** | 当前系统未配置认证，所有接口可直接访问（也因此**不可暴露到公网**） |
 | **字符编码** | UTF-8 |
+
+> 后端没有首页路由：访问 http://localhost:8080/ 返回 404。
 
 ---
 
@@ -76,18 +79,34 @@
 | current | Long | 当前页码（从1开始） |
 | pages | Long | 总页数 |
 
+> ⚠️ **分页参数目前不生效**：`MyBatisPlusConfig` 只注册了 `SqlSessionFactory`、事务管理器与字段自动填充，**没有注册 MyBatis-Plus 的分页插件**（`MybatisPlusInterceptor` + `PaginationInnerInterceptor`），而 `application.yml` 又排除了 `MybatisPlusAutoConfiguration`。实际行为是：`records` **返回整张表**（没有 LIMIT/OFFSET，也不发 COUNT 查询），`size`/`current` 仅回显请求参数，`total` 与 `pages` **恒为 0**。上表中的"总记录数/总页数"与示例里的 `100`/`10` 都不是真实返回值，接入前端前请先实测确认。
+
+### 写接口的响应回显
+
+多个写接口**不把数据库中的最新记录读回来**，而是把反序列化后的请求对象（补上 `id` 和 `updateTime`）直接作为 `data` 返回：
+
+| 接口 | 回显行为 |
+|------|----------|
+| `POST /api/orders/create` | 回显请求体；订单级字段（`totalAmount`、`status`、`orderTime`、`deleted`、`createTime`、`updateTime`）由服务层补齐后可见，但**明细数组不回填**：`orderDetail[i]` 的 `id`/`orderId`/`subtotal`/`deleted`/`createTime`/`updateTime` 均为 `null` |
+| `PUT /api/orders/update/{id}` | 回显请求体；`deleted`/`createTime`/`updateTime` 会被重新赋值，因此可见 |
+| `PUT /api/suppliers/update/{id}`、`PUT /api/parts/update/{id}`、`PUT /api/customers/update/{id}`、`PUT /api/logistics/update/{id}` | 回显请求体，只额外填充 `updateTime`；**请求里没有出现的字段在响应中为 `null`**（例如 `deleted`、`createTime`、`registeredTime`、`stockWarningValue`）——这些 `null` 只说明"没回读"，**不代表数据库里的值被清空** |
+
+> 需要确认真实落库结果时，请在写操作之后调用对应的 `GET /get/{id}`（订单用 `GET /orders/get/{id}` 或 `GET /orders/details/{id}`）。
+
 ### 状态码说明
 
-| 状态码 | 说明 |
-|--------|------|
-| 200 | 操作成功 |
-| 400 | 参数错误 |
-| 500 | 操作失败 |
-| 601 | 数据已存在（如订单编号、零件编码重复） |
-| 602 | 数据不存在 |
-| 603 | 库存不足 |
-| 604 | 订单状态异常 |
-| 605 | 供应商状态异常 |
+| 状态码 | 枚举 | 说明 | 是否会出现 |
+|--------|------|------|------------|
+| 200 | `SUCCESS` | 操作成功 | 会 |
+| 400 | `PARAM_ERROR` | 参数错误（含请求体解析失败、缺少必填参数、字段校验不通过） | 会 |
+| 500 | `ERROR` / `SERVER_ERROR` | 操作失败 / 服务器内部错误（两个枚举共用 500） | 会 |
+| 600 | `BUSINESS_ERROR` | 业务异常（`BusinessException` 的默认码） | 会 |
+| 601 | `DATA_EXISTS` | 数据已存在（如订单编号、零件编码重复） | 会 |
+| 602 | `DATA_NOT_EXISTS` | 数据不存在 | 会 |
+| 603 | `INSUFFICIENT_INVENTORY` | 库存不足（出库量 > 当前库存） | 会 |
+| 401 / 403 / 404 | `UNAUTHORIZED` / `FORBIDDEN` / `NOT_FOUND` | 未授权 / 禁止访问 / 资源不存在 | **不会**：`Result` 里有对应方法，但没有任何代码路径调用 |
+| 604 | `ORDER_STATUS_ERROR` | 订单状态异常 | **不会**：订单状态更新没有任何合法性校验 |
+| 605 | `SUPPLIER_STATUS_ERROR` | 供应商状态异常 | **不会**：供应商状态变更同样无校验 |
 
 ### 枚举值说明
 
@@ -193,14 +212,14 @@ Content-Type: application/json
 | 参数名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
 | orderNumber | String | **是** | 订单编号（唯一标识，不可重复） |
-| totalAmount | BigDecimal | 否 | 订单总金额（不传则自动根据明细计算） |
+| totalAmount | BigDecimal | 否 | 订单总金额。**传入值会被忽略**：服务端始终按明细重算（Σ quantity × unitPrice）并覆盖 |
 | status | Integer | 否 | 订单状态，默认1（待审核） |
 | orderTime | LocalDateTime | 否 | 下单时间，默认当前时间，格式：yyyy-MM-dd HH:mm:ss |
 | expectedDeliveryDate | LocalDate | 否 | 预计交货日期，格式：yyyy-MM-dd |
 | actualDeliveryDate | LocalDate | 否 | 实际交货日期，格式：yyyy-MM-dd |
 | createdBy | Long | 否 | 创建人ID |
 | remark | String | 否 | 备注 |
-| orderDetail | Array | **是** | 订单明细列表，至少包含一个明细 |
+| orderDetail | Array | 否 | 订单明细列表。**嵌套校验未生效**：`orderDetail` 字段上没有 `@Valid`，因此不传或传空数组也会创建成功（`totalAmount` 为 0）；明细项里的 `@NotNull`/`@Min` 也不会被校验 |
 
 **orderDetail 数组中的对象参数：**
 
@@ -209,7 +228,7 @@ Content-Type: application/json
 | partId | Long | **是** | 零部件ID |
 | quantity | Integer | **是** | 采购数量，最小值为1 |
 | unitPrice | BigDecimal | **是** | 采购单价 |
-| subtotal | BigDecimal | 否 | 小计金额（可不传，系统自动计算 = quantity × unitPrice） |
+| subtotal | BigDecimal | 否（只读） | 小计金额，由数据库**生成列**计算（= quantity × unitPrice）：服务层从不赋值，请求中带上该字段会被忽略，只有响应里才有值 |
 | remark | String | 否 | 明细备注 |
 
 **请求示例：**
@@ -249,39 +268,39 @@ Content-Type: application/json
     "orderNumber": "PO202605060001",
     "totalAmount": 8000.00,
     "status": 1,
-    "orderTime": "2026-05-06T10:00:00",
+    "orderTime": "2026-05-06 10:00:00",
     "expectedDeliveryDate": "2026-05-15",
     "actualDeliveryDate": null,
     "createdBy": 1,
     "remark": "紧急采购",
     "deleted": 0,
-    "createTime": "2026-05-06T10:00:00.000",
-    "updateTime": "2026-05-06T10:00:00.000",
+    "createTime": "2026-05-06 10:00:00",
+    "updateTime": "2026-05-06 10:00:00",
     "orderDetail": [
       {
-        "id": 1,
-        "orderId": 1,
+        "id": null,
+        "orderId": null,
         "partId": 1,
         "quantity": 10,
         "unitPrice": 500.00,
-        "subtotal": 5000.00,
+        "subtotal": null,
         "remark": "发动机配件",
-        "deleted": 0,
-        "createTime": "2026-05-06T10:00:00.000",
-        "updateTime": "2026-05-06T10:00:00.000",
+        "deleted": null,
+        "createTime": null,
+        "updateTime": null,
         "partDetail": null
       },
       {
-        "id": 2,
-        "orderId": 1,
+        "id": null,
+        "orderId": null,
         "partId": 2,
         "quantity": 20,
         "unitPrice": 150.00,
-        "subtotal": 3000.00,
+        "subtotal": null,
         "remark": null,
-        "deleted": 0,
-        "createTime": "2026-05-06T10:00:00.000",
-        "updateTime": "2026-05-06T10:00:00.000",
+        "deleted": null,
+        "createTime": null,
+        "updateTime": null,
         "partDetail": null
       }
     ]
@@ -290,11 +309,19 @@ Content-Type: application/json
 }
 ```
 
+> 本接口**直接回显请求体**（不重新查询数据库）：明细数组里的 `id`/`orderId`/`subtotal`/`deleted`/`createTime`/`updateTime` 都是 `null`，`partDetail` 也为 `null`——这不是"订单没有明细"，实际明细已写入数据库且 `subtotal` 由生成列算出。回显规则的完整说明见「写接口的响应回显」。
+
 ---
 
 ### 1.2 更新采购订单
 
 根据ID更新采购订单信息，包括订单明细。
+
+> **实现方式注意**：这不是原地 UPDATE。服务层依次执行：物理删除该订单的全部明细（绕过 `@TableLogic` 的 DELETE）→ 物理删除订单主表记录 → 插入新的订单行 → 插入新的明细行。带来几个后果：
+> 1. `PurchaseOrder.id` 是 `IdType.AUTO`，新订单行由数据库分配**新的自增 id**（MyBatis 会把它回填进响应对象，所以响应的 `id` 往往与请求路径里的 `{id}` 不同）；
+> 2. 明细行的 `order_id` 仍写成**旧 id**，于是明细与订单失去关联，成为孤儿行（详见 [DEVELOPMENT_GUIDE.md](../../docs/DEVELOPMENT_GUIDE.md) 的技术债表）；
+> 3. `createTime`/`updateTime` 被重置为当前时间，明细的 `id` 全部重新生成；
+> 4. 若 `orderDetail` 传空数组或不传，更新后该订单**没有明细**，`totalAmount` 归零。
 
 **请求**
 
@@ -314,14 +341,14 @@ Content-Type: application/json
 | 参数名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
 | orderNumber | String | **是** | 订单编号 |
-| totalAmount | BigDecimal | 否 | 订单总金额（不传则自动计算） |
+| totalAmount | BigDecimal | 否 | 订单总金额。**传入值会被忽略**：服务端始终按明细重算并覆盖 |
 | status | Integer | 否 | 订单状态 |
 | orderTime | LocalDateTime | 否 | 下单时间 |
 | expectedDeliveryDate | LocalDate | 否 | 预计交货日期 |
 | actualDeliveryDate | LocalDate | 否 | 实际交货日期 |
 | createdBy | Long | 否 | 创建人ID |
 | remark | String | 否 | 备注 |
-| orderDetail | Array | 否 | 订单明细列表（会替换原有明细） |
+| orderDetail | Array | 否 | 订单明细列表。**注意：它是"整体替换"而非"合并"**——服务层先物理删除该订单原有明细，只重新插入本次传入的内容；不传或传空数组时该订单更新后将没有明细，且 `totalAmount` 被重算为 0 |
 
 **请求示例：**
 
@@ -331,9 +358,24 @@ Content-Type: application/json
   "totalAmount": 8500.00,
   "status": 2,
   "expectedDeliveryDate": "2026-05-16",
-  "remark": "已审核，等待发货"
+  "remark": "已审核，等待发货",
+  "orderDetail": [
+    {
+      "partId": 1,
+      "quantity": 10,
+      "unitPrice": 500.00,
+      "remark": "发动机配件"
+    },
+    {
+      "partId": 2,
+      "quantity": 20,
+      "unitPrice": 150.00
+    }
+  ]
 }
 ```
+
+> 示例里 `totalAmount` 传了 8500.00，但服务端会按明细重算为 `10 × 500 + 20 × 150 = 8000.00` 并覆盖；若本例**不传** `orderDetail`，该订单的原有明细会被删除，`totalAmount` 变成 0。
 
 **响应示例：**
 
@@ -344,17 +386,22 @@ Content-Type: application/json
   "data": {
     "id": 1,
     "orderNumber": "PO202605060001",
-    "totalAmount": 8500.00,
+    "totalAmount": 8000.00,
     "status": 2,
-    "orderTime": "2026-05-06T10:00:00",
+    "orderTime": "2026-05-06 10:00:00",
     "expectedDeliveryDate": "2026-05-16",
     "actualDeliveryDate": null,
     "createdBy": 1,
-    "remark": "已审核，等待发货"
+    "remark": "已审核，等待发货",
+    "deleted": 0,
+    "createTime": "2026-05-06 10:00:00",
+    "updateTime": "2026-05-06 10:00:00"
   },
   "timestamp": 1746508800000
 }
 ```
+
+> 响应同样是**请求体回显**（见「写接口的响应回显」）：`deleted`/`createTime`/`updateTime` 由服务层重新赋值、`id` 被回填为**新的自增 id**，其余字段是请求里的值；数据库的实际内容请用新 `id` 调 `GET /orders/get/{id}` 复查（注意此时明细已与订单失联，见上）。
 
 ---
 
@@ -414,14 +461,14 @@ GET /api/orders/get/{id}
     "orderNumber": "PO202605060001",
     "totalAmount": 8000.00,
     "status": 1,
-    "orderTime": "2026-05-06T10:00:00",
+    "orderTime": "2026-05-06 10:00:00",
     "expectedDeliveryDate": "2026-05-15",
     "actualDeliveryDate": null,
     "createdBy": 1,
     "remark": "紧急采购",
     "deleted": 0,
-    "createTime": "2026-05-06T10:00:00.000",
-    "updateTime": "2026-05-06T10:00:00.000",
+    "createTime": "2026-05-06 10:00:00",
+    "updateTime": "2026-05-06 10:00:00",
     "orderDetail": [
       {
         "id": 1,
@@ -432,8 +479,8 @@ GET /api/orders/get/{id}
         "subtotal": 5000.00,
         "remark": "发动机配件",
         "deleted": 0,
-        "createTime": "2026-05-06T10:00:00.000",
-        "updateTime": "2026-05-06T10:00:00.000",
+        "createTime": "2026-05-06 10:00:00",
+        "updateTime": "2026-05-06 10:00:00",
         "partDetail": {
           "id": 1,
           "partCode": "ENG-001",
@@ -446,7 +493,10 @@ GET /api/orders/get/{id}
           "stockWarningValue": 10,
           "supplierId": 1,
           "category": "发动机类",
-          "description": "CG125发动机总成"
+          "description": "CG125发动机总成",
+          "deleted": 0,
+          "createTime": "2026-05-06 10:00:00",
+          "updateTime": "2026-05-06 10:00:00"
         }
       }
     ]
@@ -485,14 +535,14 @@ GET /api/orders/details/{id}
       "orderNumber": "PO202605060001",
       "totalAmount": 8000.00,
       "status": 1,
-      "orderTime": "2026-05-06T10:00:00",
+      "orderTime": "2026-05-06 10:00:00",
       "expectedDeliveryDate": "2026-05-15",
       "actualDeliveryDate": null,
       "createdBy": 1,
       "remark": "紧急采购",
       "deleted": 0,
-      "createTime": "2026-05-06T10:00:00.000",
-      "updateTime": "2026-05-06T10:00:00.000"
+      "createTime": "2026-05-06 10:00:00",
+      "updateTime": "2026-05-06 10:00:00"
     },
     "details": [
       {
@@ -504,8 +554,8 @@ GET /api/orders/details/{id}
         "subtotal": 5000.00,
         "remark": "发动机配件",
         "deleted": 0,
-        "createTime": "2026-05-06T10:00:00.000",
-        "updateTime": "2026-05-06T10:00:00.000"
+        "createTime": "2026-05-06 10:00:00",
+        "updateTime": "2026-05-06 10:00:00"
       }
     ]
   },
@@ -518,6 +568,8 @@ GET /api/orders/details/{id}
 ### 1.6 分页查询订单
 
 分页查询采购订单列表，支持多条件筛选。返回的订单包含订单明细和零部件详情。
+
+> ⚠️ 分页目前不生效：`records` 为全表，`total`/`pages` 为 0，见「分页响应格式」的说明；下方示例中的 `total`/`pages` 数值不可得。
 
 **请求**
 
@@ -549,14 +601,14 @@ GET /api/orders/page?current=1&size=10&orderNumber=&status=&startDate=&endDate=
         "orderNumber": "PO202605060001",
         "totalAmount": 8000.00,
         "status": 1,
-        "orderTime": "2026-05-06T10:00:00",
+        "orderTime": "2026-05-06 10:00:00",
         "expectedDeliveryDate": "2026-05-15",
         "actualDeliveryDate": null,
         "createdBy": 1,
         "remark": "紧急采购",
         "deleted": 0,
-        "createTime": "2026-05-06T10:00:00.000",
-        "updateTime": "2026-05-06T10:00:00.000",
+        "createTime": "2026-05-06 10:00:00",
+        "updateTime": "2026-05-06 10:00:00",
         "orderDetail": [...]
       }
     ],
@@ -574,6 +626,8 @@ GET /api/orders/page?current=1&size=10&orderNumber=&status=&startDate=&endDate=
 ### 1.7 更新订单状态
 
 更新采购订单的状态。当状态变更为4（已入库）时，会自动设置actualDeliveryDate为当前日期。
+
+> **没有任何状态合法性校验**：1–5 之外的值同样能写入，也不校验状态流转顺序（例如可从 4 直接跳回 1）。错误码 604 `ORDER_STATUS_ERROR` 因此永远不会返回。
 
 **请求**
 
@@ -644,7 +698,7 @@ GET /api/orders/statistics?startDate=2026-01-01&endDate=2026-05-06
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | totalOrders | Long | 订单总数 |
-| totalAmount | Long | 订单总金额（单位：分，原始数据为BigDecimal转Long） |
+| totalAmount | Long | 订单总金额（单位：**元**；服务端把区间内各订单的 totalAmount 求和后经 `.longValue()` **截断为整数元**） |
 | completedOrders | Long | 已完成订单数（status=4） |
 | pendingOrders | Long | 待处理订单数（status=1,2,3） |
 
@@ -683,8 +737,8 @@ GET /api/orders/search-details?partName=发动机&startDate=2026-01-01&endDate=2
       "unitPrice": 500.00,
       "subtotal": 5000.00,
       "remark": "发动机配件",
-      "createTime": "2026-05-06T10:00:00.000",
-      "updateTime": "2026-05-06T10:00:00.000",
+      "createTime": "2026-05-06T10:00:00",
+      "updateTime": "2026-05-06T10:00:00",
       "partDetail": {
         "id": 1,
         "partCode": "ENG-001",
@@ -698,8 +752,8 @@ GET /api/orders/search-details?partName=发动机&startDate=2026-01-01&endDate=2
         "supplierId": 1,
         "category": "发动机类",
         "description": "CG125发动机总成",
-        "createTime": "2026-05-01T10:00:00.000",
-        "updateTime": "2026-05-01T10:00:00.000",
+        "createTime": "2026-05-01T10:00:00",
+        "updateTime": "2026-05-01T10:00:00",
         "supplier": {
           "id": 1,
           "supplierCode": "SUP001",
@@ -780,8 +834,8 @@ Content-Type: application/json
     "creditRating": "A",
     "status": 1,
     "deleted": 0,
-    "createTime": "2026-05-06T10:00:00.000",
-    "updateTime": "2026-05-06T10:00:00.000"
+    "createTime": "2026-05-06 10:00:00",
+    "updateTime": "2026-05-06 10:00:00"
   },
   "timestamp": 1746508800000
 }
@@ -792,6 +846,8 @@ Content-Type: application/json
 ### 2.2 更新供应商
 
 根据ID更新供应商信息。
+
+> 响应是**请求体回显**（见「写接口的响应回显」）：请求中未出现的字段（如 `deleted`、`createTime`）在响应里为 `null`，示例中的非 null 值并不可得；数据库内容请用 `GET /api/suppliers/get/{id}` 复查。
 
 **请求**
 
@@ -851,8 +907,8 @@ Content-Type: application/json
     "creditRating": "B",
     "status": 1,
     "deleted": 0,
-    "createTime": "2026-05-06T10:00:00.000",
-    "updateTime": "2026-05-06T11:00:00.000"
+    "createTime": "2026-05-06 10:00:00",
+    "updateTime": "2026-05-06 11:00:00"
   },
   "timestamp": 1746508800000
 }
@@ -922,8 +978,8 @@ GET /api/suppliers/get/{id}
     "creditRating": "A",
     "status": 1,
     "deleted": 0,
-    "createTime": "2026-05-06T10:00:00.000",
-    "updateTime": "2026-05-06T10:00:00.000"
+    "createTime": "2026-05-06 10:00:00",
+    "updateTime": "2026-05-06 10:00:00"
   },
   "timestamp": 1746508800000
 }
@@ -934,6 +990,8 @@ GET /api/suppliers/get/{id}
 ### 2.5 分页查询供应商
 
 分页查询供应商列表，支持多条件筛选。
+
+> ⚠️ 分页目前不生效：`records` 为全表，`total`/`pages` 为 0，见「分页响应格式」的说明；下方示例中的 `total`/`pages` 数值不可得。
 
 **请求**
 
@@ -970,8 +1028,8 @@ GET /api/suppliers/page?current=1&size=10&name=&status=&creditRating=
         "creditRating": "A",
         "status": 1,
         "deleted": 0,
-        "createTime": "2026-05-06T10:00:00.000",
-        "updateTime": "2026-05-06T10:00:00.000"
+        "createTime": "2026-05-06 10:00:00",
+        "updateTime": "2026-05-06 10:00:00"
       }
     ],
     "total": 20,
@@ -1019,8 +1077,8 @@ GET /api/suppliers/search?name=配件
       "creditRating": "A",
       "status": 1,
       "deleted": 0,
-      "createTime": "2026-05-06T10:00:00.000",
-      "updateTime": "2026-05-06T10:00:00.000"
+      "createTime": "2026-05-06 10:00:00",
+      "updateTime": "2026-05-06 10:00:00"
     }
   ],
   "timestamp": 1746508800000
@@ -1168,8 +1226,8 @@ Content-Type: application/json
     "category": "发动机类",
     "description": "CG125发动机总成，原装品质",
     "deleted": 0,
-    "createTime": "2026-05-06T10:00:00.000",
-    "updateTime": "2026-05-06T10:00:00.000"
+    "createTime": "2026-05-06 10:00:00",
+    "updateTime": "2026-05-06 10:00:00"
   },
   "timestamp": 1746508800000
 }
@@ -1180,6 +1238,8 @@ Content-Type: application/json
 ### 3.2 更新零部件
 
 根据ID更新零部件信息。
+
+> 响应是**请求体回显**（见「写接口的响应回显」）：请求中未出现的字段（如 `stockWarningValue`、`supplierId`、`deleted`、`createTime`）在响应里为 `null`，示例中的非 null 值并不可得；数据库内容请用 `GET /api/parts/get/{id}` 复查。
 
 **请求**
 
@@ -1245,8 +1305,8 @@ Content-Type: application/json
     "category": "发动机类",
     "description": null,
     "deleted": 0,
-    "createTime": "2026-05-06T10:00:00.000",
-    "updateTime": "2026-05-06T11:00:00.000"
+    "createTime": "2026-05-06 10:00:00",
+    "updateTime": "2026-05-06 11:00:00"
   },
   "timestamp": 1746508800000
 }
@@ -1319,8 +1379,8 @@ GET /api/parts/get/{id}
     "category": "发动机类",
     "description": "CG125发动机总成，原装品质",
     "deleted": 0,
-    "createTime": "2026-05-06T10:00:00.000",
-    "updateTime": "2026-05-06T10:00:00.000"
+    "createTime": "2026-05-06 10:00:00",
+    "updateTime": "2026-05-06 10:00:00"
   },
   "timestamp": 1746508800000
 }
@@ -1331,6 +1391,8 @@ GET /api/parts/get/{id}
 ### 3.5 分页查询零部件
 
 分页查询零部件列表，支持多条件筛选。
+
+> ⚠️ 分页目前不生效：`records` 为全表，`total`/`pages` 为 0，见「分页响应格式」的说明；下方示例中的 `total`/`pages` 数值不可得。
 
 **请求**
 
@@ -1370,8 +1432,8 @@ GET /api/parts/page?current=1&size=10&name=&category=&supplierId=
         "category": "发动机类",
         "description": "CG125发动机总成，原装品质",
         "deleted": 0,
-        "createTime": "2026-05-06T10:00:00.000",
-        "updateTime": "2026-05-06T10:00:00.000"
+        "createTime": "2026-05-06 10:00:00",
+        "updateTime": "2026-05-06 10:00:00"
       }
     ],
     "total": 50,
@@ -1422,8 +1484,8 @@ GET /api/parts/search?name=发动机
       "category": "发动机类",
       "description": "CG125发动机总成，原装品质",
       "deleted": 0,
-      "createTime": "2026-05-06T10:00:00.000",
-      "updateTime": "2026-05-06T10:00:00.000"
+      "createTime": "2026-05-06 10:00:00",
+      "updateTime": "2026-05-06 10:00:00"
     },
     {
       "id": 2,
@@ -1439,8 +1501,8 @@ GET /api/parts/search?name=发动机
       "category": "发动机类",
       "description": "CG125发动机活塞",
       "deleted": 0,
-      "createTime": "2026-05-06T10:00:00.000",
-      "updateTime": "2026-05-06T10:00:00.000"
+      "createTime": "2026-05-06 10:00:00",
+      "updateTime": "2026-05-06 10:00:00"
     }
   ],
   "timestamp": 1746508800000
@@ -1521,8 +1583,8 @@ GET /api/parts/supplier/{supplierId}
       "category": "发动机类",
       "description": "CG125发动机总成，原装品质",
       "deleted": 0,
-      "createTime": "2026-05-06T10:00:00.000",
-      "updateTime": "2026-05-06T10:00:00.000"
+      "createTime": "2026-05-06T10:00:00",
+      "updateTime": "2026-05-06T10:00:00"
     },
     {
       "id": 3,
@@ -1538,8 +1600,8 @@ GET /api/parts/supplier/{supplierId}
       "category": "发动机类",
       "description": "CG125发动机缸体",
       "deleted": 0,
-      "createTime": "2026-05-06T10:00:00.000",
-      "updateTime": "2026-05-06T10:00:00.000"
+      "createTime": "2026-05-06T10:00:00",
+      "updateTime": "2026-05-06T10:00:00"
     }
   ],
   "timestamp": 1746508800000
@@ -1609,10 +1671,10 @@ Content-Type: application/json
     "address": "广东省佛山市禅城区某某路78号",
     "customerType": 2,
     "discountLevel": 2,
-    "registeredTime": "2026-05-06T10:00:00",
+    "registeredTime": "2026-05-06 10:00:00",
     "deleted": 0,
-    "createTime": "2026-05-06T10:00:00.000",
-    "updateTime": "2026-05-06T10:00:00.000"
+    "createTime": "2026-05-06 10:00:00",
+    "updateTime": "2026-05-06 10:00:00"
   },
   "timestamp": 1746508800000
 }
@@ -1623,6 +1685,8 @@ Content-Type: application/json
 ### 4.2 更新客户
 
 根据ID更新客户信息。
+
+> 响应是**请求体回显**（见「写接口的响应回显」）：请求中未出现的字段（如 `email`、`registeredTime`、`deleted`、`createTime`）在响应里为 `null`，示例中的非 null 值并不可得；数据库内容请用 `GET /api/customers/get/{id}` 复查。
 
 **请求**
 
@@ -1681,10 +1745,10 @@ Content-Type: application/json
     "address": "广东省广州市天河区某某路90号",
     "customerType": 1,
     "discountLevel": 3,
-    "registeredTime": "2026-05-06T10:00:00",
+    "registeredTime": "2026-05-06 10:00:00",
     "deleted": 0,
-    "createTime": "2026-05-06T10:00:00.000",
-    "updateTime": "2026-05-06T11:00:00.000"
+    "createTime": "2026-05-06 10:00:00",
+    "updateTime": "2026-05-06 11:00:00"
   },
   "timestamp": 1746508800000
 }
@@ -1753,10 +1817,10 @@ GET /api/customers/get/{id}
     "address": "广东省佛山市禅城区某某路78号",
     "customerType": 2,
     "discountLevel": 2,
-    "registeredTime": "2026-05-06T10:00:00",
+    "registeredTime": "2026-05-06 10:00:00",
     "deleted": 0,
-    "createTime": "2026-05-06T10:00:00.000",
-    "updateTime": "2026-05-06T10:00:00.000"
+    "createTime": "2026-05-06 10:00:00",
+    "updateTime": "2026-05-06 10:00:00"
   },
   "timestamp": 1746508800000
 }
@@ -1767,6 +1831,8 @@ GET /api/customers/get/{id}
 ### 4.5 分页查询客户
 
 分页查询客户列表，支持多条件筛选。
+
+> ⚠️ 分页目前不生效：`records` 为全表，`total`/`pages` 为 0，见「分页响应格式」的说明；下方示例中的 `total`/`pages` 数值不可得。
 
 **请求**
 
@@ -1802,10 +1868,10 @@ GET /api/customers/page?current=1&size=10&name=&customerType=&discountLevel=
         "address": "广东省佛山市禅城区某某路78号",
         "customerType": 2,
         "discountLevel": 2,
-        "registeredTime": "2026-05-06T10:00:00",
+        "registeredTime": "2026-05-06 10:00:00",
         "deleted": 0,
-        "createTime": "2026-05-06T10:00:00.000",
-        "updateTime": "2026-05-06T10:00:00.000"
+        "createTime": "2026-05-06 10:00:00",
+        "updateTime": "2026-05-06 10:00:00"
       }
     ],
     "total": 30,
@@ -1852,10 +1918,10 @@ GET /api/customers/search?name=摩托车
       "address": "广东省佛山市禅城区某某路78号",
       "customerType": 2,
       "discountLevel": 2,
-      "registeredTime": "2026-05-06T10:00:00",
+      "registeredTime": "2026-05-06 10:00:00",
       "deleted": 0,
-      "createTime": "2026-05-06T10:00:00.000",
-      "updateTime": "2026-05-06T10:00:00.000"
+      "createTime": "2026-05-06 10:00:00",
+      "updateTime": "2026-05-06 10:00:00"
     }
   ],
   "timestamp": 1746508800000
@@ -1989,15 +2055,15 @@ Content-Type: application/json
     "orderId": 1,
     "logisticsCompany": "顺丰速运",
     "trackingNumber": "SF1234567890",
-    "shipTime": "2026-05-08T10:00:00",
-    "estimatedArrivalTime": "2026-05-10T18:00:00",
+    "shipTime": "2026-05-08 10:00:00",
+    "estimatedArrivalTime": "2026-05-10 18:00:00",
     "actualArrivalTime": null,
     "status": 1,
     "receiver": "李四",
     "remark": "请当面验货",
     "deleted": 0,
-    "createTime": "2026-05-08T10:00:00.000",
-    "updateTime": "2026-05-08T10:00:00.000"
+    "createTime": "2026-05-08 10:00:00",
+    "updateTime": "2026-05-08 10:00:00"
   },
   "timestamp": 1746508800000
 }
@@ -2008,6 +2074,8 @@ Content-Type: application/json
 ### 5.2 更新物流信息
 
 根据ID更新物流信息。
+
+> 响应是**请求体回显**（见「写接口的响应回显」）：`deleted` 与 `createTime` 不会被回填（只有 `updateTime` 会），示例中的非 null 值并不可得；数据库内容请用 `GET /api/logistics/get/{id}` 复查。
 
 **请求**
 
@@ -2062,15 +2130,15 @@ Content-Type: application/json
     "orderId": 1,
     "logisticsCompany": "顺丰速运",
     "trackingNumber": "SF1234567890",
-    "shipTime": "2026-05-08T10:00:00",
-    "estimatedArrivalTime": "2026-05-10T18:00:00",
+    "shipTime": "2026-05-08 10:00:00",
+    "estimatedArrivalTime": "2026-05-10 18:00:00",
     "actualArrivalTime": null,
     "status": 2,
     "receiver": "李四",
     "remark": "货物已发出",
     "deleted": 0,
-    "createTime": "2026-05-08T10:00:00.000",
-    "updateTime": "2026-05-08T12:00:00.000"
+    "createTime": "2026-05-08 10:00:00",
+    "updateTime": "2026-05-08 12:00:00"
   },
   "timestamp": 1746508800000
 }
@@ -2134,15 +2202,15 @@ GET /api/logistics/get/{id}
     "orderId": 1,
     "logisticsCompany": "顺丰速运",
     "trackingNumber": "SF1234567890",
-    "shipTime": "2026-05-08T10:00:00",
-    "estimatedArrivalTime": "2026-05-10T18:00:00",
+    "shipTime": "2026-05-08 10:00:00",
+    "estimatedArrivalTime": "2026-05-10 18:00:00",
     "actualArrivalTime": null,
     "status": 2,
     "receiver": "李四",
     "remark": "货物已发出",
     "deleted": 0,
-    "createTime": "2026-05-08T10:00:00.000",
-    "updateTime": "2026-05-08T12:00:00.000"
+    "createTime": "2026-05-08 10:00:00",
+    "updateTime": "2026-05-08 12:00:00"
   },
   "timestamp": 1746508800000
 }
@@ -2153,6 +2221,8 @@ GET /api/logistics/get/{id}
 ### 5.5 分页查询物流信息
 
 分页查询物流列表，支持多条件筛选。
+
+> ⚠️ 分页目前不生效：`records` 为全表，`total`/`pages` 为 0，见「分页响应格式」的说明；下方示例中的 `total`/`pages` 数值不可得。
 
 **请求**
 
@@ -2183,15 +2253,15 @@ GET /api/logistics/page?current=1&size=10&orderId=&trackingNumber=&status=
         "orderId": 1,
         "logisticsCompany": "顺丰速运",
         "trackingNumber": "SF1234567890",
-        "shipTime": "2026-05-08T10:00:00",
-        "estimatedArrivalTime": "2026-05-10T18:00:00",
+        "shipTime": "2026-05-08 10:00:00",
+        "estimatedArrivalTime": "2026-05-10 18:00:00",
         "actualArrivalTime": null,
         "status": 2,
         "receiver": "李四",
         "remark": "货物已发出",
         "deleted": 0,
-        "createTime": "2026-05-08T10:00:00.000",
-        "updateTime": "2026-05-08T12:00:00.000"
+        "createTime": "2026-05-08 10:00:00",
+        "updateTime": "2026-05-08 12:00:00"
       }
     ],
     "total": 20,
@@ -2233,15 +2303,15 @@ GET /api/logistics/order/{orderId}
       "orderId": 1,
       "logisticsCompany": "顺丰速运",
       "trackingNumber": "SF1234567890",
-      "shipTime": "2026-05-08T10:00:00",
-      "estimatedArrivalTime": "2026-05-10T18:00:00",
+      "shipTime": "2026-05-08 10:00:00",
+      "estimatedArrivalTime": "2026-05-10 18:00:00",
       "actualArrivalTime": null,
       "status": 2,
       "receiver": "李四",
       "remark": "货物已发出",
       "deleted": 0,
-      "createTime": "2026-05-08T10:00:00.000",
-      "updateTime": "2026-05-08T12:00:00.000"
+      "createTime": "2026-05-08 10:00:00",
+      "updateTime": "2026-05-08 12:00:00"
     }
   ],
   "timestamp": 1746508800000
@@ -2288,6 +2358,8 @@ PATCH /api/logistics/update-status/{id}?status=3
 ### 5.8 更新发货信息
 
 更新物流的发货信息。调用此接口会自动将状态设置为2（运输中）。
+
+> ⚠️ `logisticsCompany` **虽然标为可选，但省略它会清空原有物流公司**：服务层无条件执行 `SET logistics_company = ?`，MyBatis-Plus 对 `null` 也会拼进 SET 子句，结果是写入 NULL 而不是"保持原值"。要保留原值请显式传回原公司名。
 
 **请求**
 
@@ -2389,8 +2461,8 @@ GET /api/inventory/get/{id}
     "partId": 1,
     "currentQuantity": 50,
     "safetyStock": 10,
-    "lastInboundTime": "2026-05-01T10:00:00",
-    "lastOutboundTime": "2026-05-05T14:30:00",
+    "lastInboundTime": "2026-05-01 10:00:00",
+    "lastOutboundTime": "2026-05-05 14:30:00",
     "warehouseLocation": "A区-01-01",
     "deleted": 0,
     "createTime": "2026-05-01T09:00:00.000",
@@ -2420,6 +2492,10 @@ GET /api/inventory/get/{id}
 
 分页查询库存列表，支持多条件筛选。返回的库存记录包含零部件信息。
 
+> ⚠️ 分页目前不生效：`records` 为全表，`total`/`pages` 为 0，见「分页响应格式」的说明；下方示例中的 `total`/`pages` 数值不可得。
+>
+> 另外 `partName` **不是在 SQL 里过滤**，而是在取回数据后于 Java 侧过滤：命中的记录若落在"后面几页"就永远不会返回，`total` 也仍是未过滤的计数。
+
 **请求**
 
 ```
@@ -2448,8 +2524,8 @@ GET /api/inventory/page?current=1&size=10&partName=&warehouseLocation=
         "partId": 1,
         "currentQuantity": 50,
         "safetyStock": 10,
-        "lastInboundTime": "2026-05-01T10:00:00",
-        "lastOutboundTime": "2026-05-05T14:30:00",
+        "lastInboundTime": "2026-05-01 10:00:00",
+        "lastOutboundTime": "2026-05-05 14:30:00",
         "warehouseLocation": "A区-01-01",
         "deleted": 0,
         "createTime": "2026-05-01T09:00:00.000",
@@ -2550,6 +2626,8 @@ POST /api/inventory/outbound?partId=1&quantity=5
 
 获取当前库存数量**低于**安全库存的记录列表（currentQuantity < safetyStock）。
 
+> 注意两点：(1) 与 6.7 的口径不同——这里用严格 `<`，6.7 用 `<=`；(2) 关联零部件**已被逻辑删除**的库存记录会被静默丢弃（取不到 `part` 就不加入结果），因此列表可能少于实际预警数。
+
 **请求**
 
 ```
@@ -2568,8 +2646,8 @@ GET /api/inventory/warning
       "partId": 3,
       "currentQuantity": 5,
       "safetyStock": 10,
-      "lastInboundTime": "2026-04-15T10:00:00",
-      "lastOutboundTime": "2026-05-05T14:30:00",
+      "lastInboundTime": "2026-04-15 10:00:00",
+      "lastOutboundTime": "2026-05-05 14:30:00",
       "warehouseLocation": "B区-02-05",
       "deleted": 0,
       "createTime": "2026-04-01T09:00:00.000",
@@ -2626,7 +2704,7 @@ PATCH /api/inventory/update-safety-stock/{id}?safetyStock=20
 
 ### 6.7 库存盘点
 
-获取库存盘点统计数据和所有库存明细。
+获取库存盘点统计数据和所有库存明细。注意本接口的预警口径与 6.5 **不一致**：这里用 `当前数量 <= 安全库存`，而 `/inventory/warning` 用 `<`（严格小于）。
 
 **请求**
 
@@ -2650,8 +2728,8 @@ GET /api/inventory/check
         "partId": 1,
         "currentQuantity": 50,
         "safetyStock": 10,
-        "lastInboundTime": "2026-05-01T10:00:00",
-        "lastOutboundTime": "2026-05-05T14:30:00",
+        "lastInboundTime": "2026-05-01 10:00:00",
+        "lastOutboundTime": "2026-05-05 14:30:00",
         "warehouseLocation": "A区-01-01",
         "deleted": 0,
         "createTime": "2026-05-01T09:00:00.000",
@@ -2675,8 +2753,8 @@ GET /api/inventory/check
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | totalItems | Long | 库存记录总数 |
-| warningItems | Long | 预警库存数（当前数量 < 安全库存） |
-| normalItems | Long | 正常库存数（当前数量 >= 安全库存） |
+| warningItems | Long | 预警库存数（当前数量 **<=** 安全库存） |
+| normalItems | Long | 其余库存数（= totalItems − warningItems，即当前数量 > 安全库存） |
 | inventoryList | Array | 所有库存明细列表 |
 
 ---
@@ -2727,9 +2805,9 @@ GET /api/statistics/dashboard
 | userCount | Long | 用户总数 |
 | inventoryCount | Long | 库存记录数 |
 | monthPurchase | Object | 本月采购统计 |
-| monthPurchase.orderCount | Integer | 本月订单数 |
-| monthPurchase.totalAmount | Long | 本月采购总金额（单位：分） |
-| monthPurchase.completedCount | Integer | 本月已完成订单数 |
+| monthPurchase.orderCount | Long | 本月订单数 |
+| monthPurchase.totalAmount | Long | 本月采购总金额（单位：**元**，截断为整数元） |
+| monthPurchase.completedCount | Long | 本月已完成订单数 |
 
 ---
 
@@ -2867,7 +2945,7 @@ GET /api/statistics/inventory
 | statusDistribution.warning | Long | 预警库存数（currentQuantity <= safetyStock） |
 | statusDistribution.normal | Long | 正常库存数 |
 | zeroStockCount | Long | 库存为0的产品数 |
-| total | Long | 库存记录总数 |
+| total | Integer | 库存记录总数 |
 
 ---
 
@@ -2931,7 +3009,7 @@ GET /api/statistics/monthly-trend?startDateParam=2026-01-01&endDateParam=2026-05
 |------|------|------|
 | month | String | 月份，格式：yyyy-MM |
 | orderCount | Integer | 该月订单数量 |
-| totalAmount | Long | 该月采购总金额（单位：分） |
+| totalAmount | BigDecimal | 该月采购总金额（单位：**元**，保留小数；本接口**不**做整数截断，与 7.1 的同名字段语义不同） |
 
 ---
 
@@ -2940,12 +3018,15 @@ GET /api/statistics/monthly-trend?startDateParam=2026-01-01&endDateParam=2026-05
 | 状态码 | 说明 | 可能原因 |
 |--------|------|----------|
 | 200 | 操作成功 | - |
-| 500 | 操作失败 | 服务器内部错误 |
+| 400 | 参数错误 | 请求体 JSON 解析失败、时间格式不合法、缺少必填查询参数、字段校验（`@NotNull`、`@Min` 等）不通过 |
+| 500 | 操作失败 / 服务器内部错误 | 未捕获异常（`ERROR` 与 `SERVER_ERROR` 共用 500） |
+| 600 | 业务异常 | `BusinessException` 抛出（未指定具体码时的默认值） |
 | 601 | 数据已存在 | 重复插入相同编码的记录（订单编号、零件编码等） |
 | 602 | 数据不存在 | 尝试操作不存在的记录 |
 | 603 | 库存不足 | 出库数量超过当前库存 |
-| 604 | 订单状态异常 | 订单状态不允许当前操作 |
-| 605 | 供应商状态异常 | 供应商状态不允许当前操作 |
+| 604 | 订单状态异常 | **预留，不会出现**：订单状态更新无任何校验，1–5 之外的值也能写入 |
+| 605 | 供应商状态异常 | **预留，不会出现**：供应商状态变更同样无校验 |
+| 401 / 403 / 404 | 未授权 / 禁止访问 / 资源不存在 | **预留，不会出现**（`Result` 方法存在但无人调用；无鉴权层） |
 
 ---
 
@@ -2959,7 +3040,7 @@ GET /api/statistics/monthly-trend?startDateParam=2026-01-01&endDateParam=2026-05
 | String | 字符串 | "发动机", "SF123456" |
 | Boolean | 布尔值 | true, false |
 | LocalDate | 日期 | 2026-05-06 |
-| LocalDateTime | 日期时间 | 2026-05-06T10:00:00, 2026-05-06 10:00:00 |
+| LocalDateTime | 日期时间 | 2026-05-06 10:00:00 |
 | Array | 数组 | [1, 2, 3] |
 | Object | 对象 | {"key": "value"} |
 
@@ -2967,11 +3048,24 @@ GET /api/statistics/monthly-trend?startDateParam=2026-01-01&endDateParam=2026-05
 
 ## 时间格式说明
 
-| 格式 | 模式 | 示例 |
-|------|------|------|
-| 日期 | yyyy-MM-dd | 2026-05-06 |
-| 日期时间 | yyyy-MM-dd HH:mm:ss | 2026-05-06 10:00:00 |
-| ISO日期时间 | yyyy-MM-dd'T'HH:mm:ss.SSS | 2026-05-06T10:00:00.000 |
+**输出（服务端 → 客户端）**——注意**同一个响应里可能同时出现两种写法**，取决于字段所在的类：
+
+| 字段来源 | 序列化方式 | 输出格式 | 示例 |
+|----------|------------|----------|------|
+| 实体类字段（`BaseEntity.createTime`/`updateTime`，以及 `orderTime`、`shipTime`、`lastInboundTime`、`registeredTime` 等） | `CustomLocalDateTimeSerializer`（`@JsonSerialize` 覆盖 `@JsonFormat`） | `yyyy-MM-dd HH:mm:ss` | `2026-05-06 10:00:00` |
+| `InventoryWithPart.createTime`/`updateTime`（含其 `partDetail`） | `@JsonFormat("yyyy-MM-dd'T'HH:mm:ss.SSS")` | ISO，**带毫秒** | `2026-05-06T10:00:00.000` |
+| `PartWithSupplier.createTime`/`updateTime`、`OrderDetailWithPartAndSupplier.createTime`/`updateTime`（**未加任何注解**） | Jackson 默认 ISO | ISO，无毫秒 | `2026-05-06T10:00:00` |
+| 所有 `LocalDate` 字段（`expectedDeliveryDate`、`actualDeliveryDate`） | `@JsonFormat("yyyy-MM-dd")` | `yyyy-MM-dd` | `2026-05-06` |
+
+> 哪些接口会返回后两种 ISO 写法：`/inventory/get/{id}`、`/inventory/page`、`/inventory/warning`、`/inventory/check`（`InventoryWithPart`），`/parts/supplier/{supplierId}`（`PartWithSupplier`），`/orders/search-details`（`OrderDetailWithPartAndSupplier`）。其余接口返回的是实体，用空格写法。
+>
+> 上述三种写法已用 Jackson 2.15（与 Spring Boot 3.1.10 同版本）实测确认；注意 `spring.jackson.date-format` **不影响** `LocalDateTime`（它只作用于 `java.util.Date`），不要以为配置里写了空格格式就全局统一。
+
+**输入（客户端 → 服务端）**
+
+- JSON 请求体中的 `LocalDateTime` 经 `CustomLocalDateTimeDeserializer` 宽容解析，以下写法都能接受：`2026-05-06 10:00:00`、`2026-05-06 10:00:00.000`、`2026-05-06T10:00:00`、`2026-05-06T10:00:00.000`、`2026-05-06 10:00`、`2026-05-06T10:00:00Z`、`2026-05-06T10:00:00+08:00`。
+- 解析失败（如 `2026/05/06 10:00:00`、纯日期 `2026-05-06`）会返回 `code=400`，不是 500。
+- 查询参数中的时间（`logistics/update-shipping`、`logistics/update-receiving`）**只接受** `yyyy-MM-dd HH:mm:ss`（空格，不是 `T`）。
 
 ---
 

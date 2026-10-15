@@ -263,7 +263,7 @@ WHERE od.deleted = 0 AND o.deleted = 0 AND p.deleted = 0;
 
 | 来源 | 执行时机 | 覆盖内容 |
 |------|----------|----------|
-| `DatabaseInitializer.createTables()` | 应用启动时**自动**执行（`ApplicationRunner`） | 8 张表（`CREATE TABLE IF NOT EXISTS`）+ **仅** 8 个索引/唯一键，**无外键、无视图、无复合索引、无 `uk_order_part`** |
+| `DatabaseInitializer.createTables()` | 应用启动时**自动**执行（`ApplicationRunner`） | 8 张表（`CREATE TABLE IF NOT EXISTS`）+ **11 个二级索引/唯一键**（6 个 `uk_` 唯一键 + 5 个 `idx_` 普通索引，另有 8 个主键），**无外键、无视图、无复合索引、无 `uk_order_part`** |
 | `docs/database_schema.sql` | **必须手动**执行 | 8 张表 + **6 个外键** + 全部索引 + 5 个复合索引 + 3 个视图 + 4 条种子用户 |
 | `SparkPlugDataInitializer` | **手动**运行 main（见 1.9） | 仅通过 REST 接口追加火花塞相关的供应商/零部件/库存/订单数据 |
 
@@ -324,7 +324,7 @@ WHERE od.deleted = 0 AND o.deleted = 0 AND p.deleted = 0;
 | 6 | `insertPurchaseOrders()` | 120 条订单 + 每单 2–7 条明细 | 状态按权重 `{1:10, 2:20, 3:30, 4:35, 5:5}` 随机 |
 | 7 | `insertLogistics()` | 仅 `status IN (3,4)` 的订单各一条（约 78 条） | 状态取 `3 已签收` / `2 运输中` 各 50% |
 
-> `logistics` 的行数不是固定值——它取决于第 6 步随机出的订单状态分布。README 里写的"80-100 条"与实际不符。
+> `logistics` 的行数不是固定值——它取决于第 6 步随机出的订单状态分布（约 78 条）。
 
 关键随机规则：
 
@@ -375,7 +375,7 @@ mvn -q exec:java -Dexec.mainClass=com.motorparts.init.SparkPlugDataInitializer
 
 **幂等性**：设计为可重复运行——先 `GET` 查询（供应商按硬编码中文名 `/api/suppliers/search`，零部件按 `/api/parts/search`，库存按 `/api/inventory/page`），存在则 `PUT` 更新或跳过，不存在则 `POST` 创建，因此不会产生重复数据。
 
-**订单编号规则**：`PO{year}{month:02d}{序号:04d}-{毫秒数%10000}`，例如 `PO2024010001-2345`。这与 `DatabaseInitializer` 的 `PO{year}{6位序号}` 以及 README 里写的 `PO202605060001` 都**不是同一个规则**——项目中共存三套编号约定。
+**订单编号规则**：`PO{year}{month:02d}{序号:04d}-{毫秒数%10000}`，例如 `PO2024010001-2345`。这与 `DatabaseInitializer` 的 `PO{year}{6位序号}` 以及文档示例里出现的 `PO202605060001` 都**不是同一个规则**——项目中共存多套编号约定（详见 [DEVELOPMENT_GUIDE.md](DEVELOPMENT_GUIDE.md) 的技术债表）。
 
 **实现细节**：JSON 由手写的 `toJson`/`toJsonArray`/`escapeJson` 拼装，响应中的 id 用 `indexOf("\"id\":")` 字符串截取（因为项目未引入 Fastjson/Jackson 之外的 JSON 库）。这意味着**后端响应字段顺序或空白一变，该脚本就会失效**。
 

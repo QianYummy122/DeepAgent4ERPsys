@@ -36,11 +36,11 @@
 | Maven | 3.6+ | 构建 |
 | MySQL | **8.0+** | `mysql-connector-j 8.0.33`；DDL 使用 `utf8mb4_0900_ai_ci` 排序规则（MySQL 8 专属） |
 | MongoDB | 5.0+ | `langgraph-checkpoint-mongodb` |
-| Python | **3.10+** | `pyproject.toml`：`requires-python = ">=3.10"`；未用 `|` 联合类型以外的 3.11+ 特性，但实际开发环境为 3.14 |
+| Python | **3.10+** | `pyproject.toml`：`requires-python = ">=3.10"`；代码使用 `X \| None` 注解（PEP 604，3.10 起可用），实际开发环境为 3.14 |
 | Node.js | **18+** | Vite 5 要求 |
 | WSL2 + 一个发行版 | 默认 `Ubuntu-20.04` | 仅 `SANDBOX_MODE=local` 时需要 |
 
-> ⚠️ 子项目的 `MotorcyclePartsProcurementSystem/README.md` 声称 "JDK 1.8+" 与 "Spring Boot 2.7.18"，**这是过时信息**，实际是 JDK 17 + Spring Boot 3.1.10。以 `pom.xml` 为准。
+> ✅ 子项目的 [MotorcyclePartsProcurementSystem/README.md](../MotorcyclePartsProcurementSystem/README.md) 已按 `pom.xml` 核实：**JDK 17 + Spring Boot 3.1.10**（该 README 早期版本曾写 "JDK 1.8+ / Spring Boot 2.7.18"，现已更正，以 `pom.xml` 为准）。
 
 ### 2.2 检查清单
 
@@ -74,7 +74,7 @@ SELECT COUNT(*) FROM supplier;  -- 期望 30
 
 | 做法 | 结果 |
 |------|------|
-| **A. 只启动应用**（省事） | 表能工作，但**没有外键、没有 `uk_order_part`、没有视图、只有 8 个索引** |
+| **A. 只启动应用**（省事） | 表能工作，但**没有外键、没有 `uk_order_part`、没有视图、只有 11 个二级索引/唯一键** |
 | **B. 先手动执行 `docs/database_schema.sql`** | 得到完整约束与视图，**但它会插入 4 个种子用户，导致应用启动时 `insertSampleData()` 因 `COUNT(*) FROM user > 0` 而整体跳过** → 你会得到"空表 + 4 用户"的库 |
 | **C. 推荐** | 先让应用建表并播种（做法 A）→ 再手动补执行 `database_schema.sql` 中**除末尾 `INSERT INTO user` 之外**的部分。注意其中 `CREATE INDEX IF NOT EXISTS` 在 MySQL 8 上是**非法语法**，需改写为 `CREATE INDEX` 或 `ALTER TABLE ... ADD INDEX` |
 
@@ -144,7 +144,7 @@ curl.exe "http://localhost:8080/api/statistics/dashboard"
 # OpenAPI JSON：http://localhost:8080/v3/api-docs
 ```
 
-> ⚠️ **Swagger 地址**：`pom.xml` 用的是 springdoc-openapi **2.0.2**，UI 在 `/swagger-ui/index.html`。README 里写的 `/swagger-ui.html` 是 springdoc 1.x 的路径（2.x 会重定向，但直接访问新路径更可靠）。
+> ⚠️ **Swagger 地址**：`pom.xml` 用的是 springdoc-openapi **2.0.2**，UI 在 `/swagger-ui/index.html`（`/swagger-ui.html` 是 springdoc 1.x 的路径，2.x 会重定向，但直接访问新路径更可靠）。
 
 ### 4.3 步骤 ③：MCP 桥接
 
