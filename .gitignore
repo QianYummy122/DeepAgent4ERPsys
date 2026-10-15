@@ -1,0 +1,37 @@
+# API Keys & Secrets
+.env
+.env.local
+
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+build/
+
+# IDE
+.idea/
+.vscode/
+.venv/
+.claude/
+*.swp
+*.swo
+
+# Temporary files
+logs/
+
+# Evaluation results
+evaluation_results.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+
+# Gradio
+gradio_cached_examples/
+
+#other
+.ruff_cache/
+其它（old）/

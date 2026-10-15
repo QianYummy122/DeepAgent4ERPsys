@@ -1,0 +1,95 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /
+
+spring:
+  application:
+    name: MotorcyclePartsProcurementSystem
+  autoconfigure:
+    exclude: com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration
+
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/motorparts_db?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    password: 441616300g
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      connection-test-query: SELECT 1
+
+  # JPA配置（用于自动创建表，可选）
+  jpa:
+    hibernate:
+      ddl-auto: none
+    show-sql: false
+
+  # Jackson配置
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: UTC
+    serialization:
+      write-dates-as-timestamps: false
+    deserialization:
+      fail-on-unknown-properties: false
+
+  # 文件上传配置
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 100MB
+
+  # 国际化配置
+  messages:
+    basename: i18n/messages
+    encoding: UTF-8
+
+
+
+# 日志配置
+logging:
+  level:
+    com.motorparts: debug
+    com.baomidou.mybatisplus: warn
+    org.springframework.web: info
+    org.springframework.security: warn
+  file:
+    name: logs/motorparts.log
+  logback:
+    rollingpolicy:
+      max-file-size: 10MB
+      max-history: 30
+
+# 自定义配置
+motorparts:
+  # 数据初始化配置
+  init:
+    enabled: true
+    recreate-tables: false
+    insert-sample-data: true
+  # 文件上传路径
+  upload:
+    path: ./uploads/
+    max-size: 10MB
+  # 系统配置
+  system:
+    name: 摩托车零部件采购管理系统
+    version: 1.0.0
+    copyright: © 2024-2026 张雪摩托车零部件采购管理系统
+
+# MyBatis Plus 配置
+mybatis-plus:
+  # 禁用自动DDL功能
+  global-config:
+    db-config:
+      ddl-auto: none
+  # 禁用MyBatis Plus的DDL自动执行
+  configuration:
+    map-underscore-to-camel-case: true
+    use-generated-keys: true
+    use-column-label: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
